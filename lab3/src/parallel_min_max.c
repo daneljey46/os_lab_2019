@@ -14,12 +14,24 @@
 
 #include "find_min_max.h"
 #include "utils.h"
+#include <signal.h>
+
+pid_t *child_pids;
+int pnum_global;
+
+void kill_children(int sig) {
+    for (int i = 0; i < pnum_global; i++) {
+        kill(child_pids[i], SIGKILL);
+    }
+    printf("\nTimeout reached. All child processes killed.\n");
+}
 
 int main(int argc, char **argv) {
   int seed = -1;
   int array_size = -1;
   int pnum = -1;
   bool with_files = false;
+  int timeout = -1;
 
   while (true) {
     int current_optind = optind ? optind : 1;
@@ -28,6 +40,7 @@ int main(int argc, char **argv) {
                                       {"array_size", required_argument, 0, 0},
                                       {"pnum", required_argument, 0, 0},
                                       {"by_files", no_argument, 0, 'f'},
+                                      {"timeout", required_argument, 0, 0},
                                       {0, 0, 0, 0}};
 
     int option_index = 0;
@@ -63,6 +76,14 @@ int main(int argc, char **argv) {
             with_files = true;
             break;
 
+          case 4:
+            timeout = atoi(optarg);
+            if (timeout <= 0) {
+               printf("Error: timeout must be a positive number\n");
+              return 1;
+            }
+            break;
+
           default:
             printf("Index %d is out of options\n", option_index);
         }
@@ -86,18 +107,30 @@ int main(int argc, char **argv) {
   int active_child_processes = 0;
 
   int pipefd[2];
-if (!with_files) {
+  if (!with_files) {
     if (pipe(pipefd) == -1) {
         perror("pipe");
         return 1;
     }
-}
+  }
+
+  pnum_global = pnum;
+  child_pids = malloc(sizeof(pid_t) * pnum);
+
+  if (timeout > 0) {
+    signal(SIGALRM, kill_children);
+    alarm(timeout);
+  }
 
   struct timeval start_time;
   gettimeofday(&start_time, NULL);
 
   for (int i = 0; i < pnum; i++) {
     pid_t child_pid = fork();
+    if (child_pid > 0) {
+      child_pids[i] = child_pid;
+      active_child_processes += 1;
+    }
     if (child_pid >= 0) {
       // successful fork
       active_child_processes += 1;
@@ -129,8 +162,20 @@ if (!with_files) {
   }
 
   while (active_child_processes > 0) {
-    wait(NULL);
-    active_child_processes -= 1;
+    int status;
+    pid_t done_pid = waitpid(-1, &status, WNOHANG);
+
+    if (done_pid > 0) {
+        active_child_processes -= 1;
+    } else if (done_pid == 0) {
+        usleep(10000); 
+    } else {
+        if (active_child_processes > 0 && timeout > 0) {
+            break; 
+        }
+        
+        break;
+    }
   }
 
   struct MinMax min_max;
@@ -166,6 +211,11 @@ if (!with_files) {
   elapsed_time += (finish_time.tv_usec - start_time.tv_usec) / 1000.0;
 
   free(array);
+  if (active_child_processes > 0 && timeout > 0) {
+    free(child_pids);
+    free(array);
+    return 1;
+  }
 
   printf("Min: %d\n", min_max.min);
   printf("Max: %d\n", min_max.max);
