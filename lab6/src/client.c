@@ -3,7 +3,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-
 #include <errno.h>
 #include <getopt.h>
 #include <netdb.h>
@@ -11,10 +10,19 @@
 #include <netinet/ip.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <arpa/inet.h>
+#include <pthread.h>
 
 struct Server {
   char ip[255];
   int port;
+};
+
+struct ThreadArgs {
+    struct Server server;
+    uint64_t begin;
+    uint64_t end;
+    uint64_t mod;
 };
 
 uint64_t MultModulo(uint64_t a, uint64_t b, uint64_t mod) {
@@ -26,7 +34,6 @@ uint64_t MultModulo(uint64_t a, uint64_t b, uint64_t mod) {
     a = (a * 2) % mod;
     b /= 2;
   }
-
   return result % mod;
 }
 
@@ -37,128 +44,131 @@ bool ConvertStringToUI64(const char *str, uint64_t *val) {
     fprintf(stderr, "Out of uint64_t range: %s\n", str);
     return false;
   }
-
   if (errno != 0)
     return false;
-
   *val = i;
   return true;
+}
+
+void *ProcessServer(void *args) {
+    struct ThreadArgs *t_args = (struct ThreadArgs *)args;
+    uint64_t *result = malloc(sizeof(uint64_t));
+    *result = 1; 
+
+    int sck = socket(AF_INET, SOCK_STREAM, 0);
+    if (sck < 0) return result;
+
+    struct hostent *hostname = gethostbyname(t_args->server.ip);
+    if (hostname == NULL) {
+        fprintf(stderr, "gethostbyname failed: %s\n", t_args->server.ip);
+        close(sck);
+        return result;
+    }
+
+    struct sockaddr_in server;
+    server.sin_family = AF_INET;
+    server.sin_port = htons(t_args->server.port);
+    server.sin_addr.s_addr = *((unsigned long *)hostname->h_addr_list[0]);
+
+    if (connect(sck, (struct sockaddr *)&server, sizeof(server)) < 0) {
+        fprintf(stderr, "Connection to %s:%d failed\n", t_args->server.ip, t_args->server.port);
+        close(sck);
+        return result;
+    }
+
+    uint64_t task[3] = {t_args->begin, t_args->end, t_args->mod};
+    if (send(sck, task, sizeof(task), 0) < 0) {
+        close(sck);
+        return result;
+    }
+
+    if (recv(sck, result, sizeof(uint64_t), 0) < 0) {
+        *result = 1;
+    }
+
+    close(sck);
+    return (void *)result;
 }
 
 int main(int argc, char **argv) {
   uint64_t k = -1;
   uint64_t mod = -1;
-  char servers[255] = {'\0'}; // TODO: explain why 255
+  char servers[255] = {'\0'}; 
 
   while (true) {
-    int current_optind = optind ? optind : 1;
-
-    static struct option options[] = {{"k", required_argument, 0, 0},
-                                      {"mod", required_argument, 0, 0},
-                                      {"servers", required_argument, 0, 0},
-                                      {0, 0, 0, 0}};
+    static struct option options[] = {
+        {"k", required_argument, 0, 0},
+        {"mod", required_argument, 0, 0},
+        {"servers", required_argument, 0, 0},
+        {0, 0, 0, 0}
+    };
 
     int option_index = 0;
     int c = getopt_long(argc, argv, "", options, &option_index);
 
-    if (c == -1)
-      break;
+    if (c == -1) break;
 
     switch (c) {
-    case 0: {
-      switch (option_index) {
       case 0:
-        ConvertStringToUI64(optarg, &k);
-        // TODO: your code here
+        switch (option_index) {
+          case 0: ConvertStringToUI64(optarg, &k); break;
+          case 1: ConvertStringToUI64(optarg, &mod); break;
+          case 2: strncpy(servers, optarg, 254); break;
+        }
         break;
-      case 1:
-        ConvertStringToUI64(optarg, &mod);
-        // TODO: your code here
-        break;
-      case 2:
-        // TODO: your code here
-        memcpy(servers, optarg, strlen(optarg));
-        break;
-      default:
-        printf("Index %d is out of options\n", option_index);
-      }
-    } break;
-
-    case '?':
-      printf("Arguments error\n");
-      break;
-    default:
-      fprintf(stderr, "getopt returned character code 0%o?\n", c);
+      case '?': printf("Arguments error\n"); break;
+      default: break;
     }
   }
 
-  if (k == -1 || mod == -1 || !strlen(servers)) {
-    fprintf(stderr, "Using: %s --k 1000 --mod 5 --servers /path/to/file\n",
-            argv[0]);
+  if (k == -1 || mod == -1 || strlen(servers) == 0) {
+    fprintf(stderr, "Usage: %s --k 1000 --mod 5 --servers /path/to/file\n", argv[0]);
     return 1;
   }
 
-  // TODO: for one server here, rewrite with servers from file
-  unsigned int servers_num = 1;
-  struct Server *to = malloc(sizeof(struct Server) * servers_num);
-  // TODO: delete this and parallel work between servers
-  to[0].port = 20001;
-  memcpy(to[0].ip, "127.0.0.1", sizeof("127.0.0.1"));
-
-  // TODO: work continiously, rewrite to make parallel
-  for (int i = 0; i < servers_num; i++) {
-    struct hostent *hostname = gethostbyname(to[i].ip);
-    if (hostname == NULL) {
-      fprintf(stderr, "gethostbyname failed with %s\n", to[i].ip);
-      exit(1);
-    }
-
-    struct sockaddr_in server;
-    server.sin_family = AF_INET;
-    server.sin_port = htons(to[i].port);
-    server.sin_addr.s_addr = *((unsigned long *)hostname->h_addr);
-
-    int sck = socket(AF_INET, SOCK_STREAM, 0);
-    if (sck < 0) {
-      fprintf(stderr, "Socket creation failed!\n");
-      exit(1);
-    }
-
-    if (connect(sck, (struct sockaddr *)&server, sizeof(server)) < 0) {
-      fprintf(stderr, "Connection failed\n");
-      exit(1);
-    }
-
-    // TODO: for one server
-    // parallel between servers
-    uint64_t begin = 1;
-    uint64_t end = k;
-
-    char task[sizeof(uint64_t) * 3];
-    memcpy(task, &begin, sizeof(uint64_t));
-    memcpy(task + sizeof(uint64_t), &end, sizeof(uint64_t));
-    memcpy(task + 2 * sizeof(uint64_t), &mod, sizeof(uint64_t));
-
-    if (send(sck, task, sizeof(task), 0) < 0) {
-      fprintf(stderr, "Send failed\n");
-      exit(1);
-    }
-
-    char response[sizeof(uint64_t)];
-    if (recv(sck, response, sizeof(response), 0) < 0) {
-      fprintf(stderr, "Recieve failed\n");
-      exit(1);
-    }
-
-    // TODO: from one server
-    // unite results
-    uint64_t answer = 0;
-    memcpy(&answer, response, sizeof(uint64_t));
-    printf("answer: %llu\n", answer);
-
-    close(sck);
+  FILE *f = fopen(servers, "r");
+  if (!f) {
+      perror("Failed to open servers file");
+      return 1;
   }
-  free(to);
 
+  unsigned int servers_num = 0;
+  char line[256];
+  while (fgets(line, sizeof(line), f)) servers_num++;
+  rewind(f);
+
+  struct Server *to = malloc(sizeof(struct Server) * servers_num);
+  for (int i = 0; i < servers_num; i++) {
+      fscanf(f, "%[^:]:%d\n", to[i].ip, &to[i].port);
+  }
+  fclose(f);
+
+  pthread_t threads[servers_num];
+  struct ThreadArgs args[servers_num];
+  uint64_t chunk = k / servers_num;
+
+  for (int i = 0; i < servers_num; i++) {
+      args[i].server = to[i];
+      args[i].mod = mod;
+      args[i].begin = i * chunk + 1;
+      args[i].end = (i == servers_num - 1) ? k : (i + 1) * chunk;
+
+      if (pthread_create(&threads[i], NULL, ProcessServer, (void *)&args[i]) != 0) {
+          perror("pthread_create failed");
+          return 1;
+      }
+  }
+
+  uint64_t total_answer = 1;
+  for (int i = 0; i < servers_num; i++) {
+      uint64_t *thread_result;
+      pthread_join(threads[i], (void **)&thread_result);
+      total_answer = MultModulo(total_answer, *thread_result, mod);
+      free(thread_result);
+  }
+
+  printf("Final answer for %llu! mod %llu: %llu\n", k, mod, total_answer);
+
+  free(to);
   return 0;
 }
