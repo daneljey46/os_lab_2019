@@ -4,11 +4,14 @@ LDFLAGS=-lpthread
 
 all: client server
 
-client: client.c
-	$(CC) $(CFLAGS) client.c -o client $(LDFLAGS)
+libsquare.o: libsquare.c libsquare.h
+	$(CC) $(CFLAGS) -c libsquare.c -o libsquare.o
 
-server: server.c
-	$(CC) $(CFLAGS) server.c -o server $(LDFLAGS)
+client: client.c libsquare.o
+	$(CC) $(CFLAGS) client.c libsquare.o -o client $(LDFLAGS)
+
+server: server.c libsquare.o
+	$(CC) $(CFLAGS) server.c libsquare.o -o server $(LDFLAGS)
 
 clean:
-	rm -f client server
+	rm -f client server libsquare.o

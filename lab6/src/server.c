@@ -10,18 +10,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 #include <pthread.h>
-
-uint64_t MultModulo(uint64_t a, uint64_t b, uint64_t mod) {
-  uint64_t result = 0;
-  a = a % mod;
-  while (b > 0) {
-    if (b % 2 == 1)
-      result = (result + a) % mod;
-    a = (a * 2) % mod;
-    b /= 2;
-  }
-  return result % mod;
-}
+#include "libsquare.h"
 
 int main(int argc, char **argv) {
   int tnum = -1; 
@@ -107,7 +96,6 @@ int main(int argc, char **argv) {
             result = MultModulo(result, i, mod);
         }
 
-        // Отправка результата назад клиенту
         send(client_fd, &result, sizeof(uint64_t), 0);
     }
 
